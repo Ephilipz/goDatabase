@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 )
 
@@ -84,84 +83,4 @@ func (node BNode) getVal(idx uint16) []byte {
 // node size in bytes
 func (node BNode) nbytes() uint16 {
 	return node.kvPos(node.nkeys())
-}
-
-// returns the first kid node whose range intersects with the key
-// TODO: bisect
-func nodeLookupLeaf(parent BNode, key []byte) uint16 {
-	var result uint16 = 0
-	// the first key is skipped since it's a copy from the parent node
-	for i := uint16(1); i < parent.nkeys(); i++ {
-		cmp := bytes.Compare(parent.getKey(i), key)
-		// keys[i] is smaller than or equal to key
-		if cmp <= 0 {
-			result = i
-		}
-		// keys[i] is larger than or equal to key
-		if cmp >= 0 {
-			break
-		}
-	}
-	return result
-}
-
-// add a new KV pair to a leaf node
-func leafInsert(new BNode, old BNode, idx uint16, key []byte, val []byte) {
-	new.setHeader(BNODE_LEAF, old.nkeys()+1)
-	nodeAppendRange(new, old, 0, 0, idx)
-	nodeAppendKV(new, idx, 0, key, val)
-	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
-}
-
-// update a KV pair in a leaf node
-func leafUpdate(new BNode, old BNode, idx uint16, key []byte, val []byte) {
-	new.setHeader(BNODE_LEAF, old.nkeys())
-	nodeAppendRange(new, old, 0, 0, idx)
-	nodeAppendKV(new, idx, 0, key, val)
-	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-idx)
-}
-
-// copy multiple KVs into the position
-func nodeAppendRange(new BNode, old BNode, newPos uint16, oldPos uint16, count uint16) {
-	assert(oldPos+count <= old.nkeys())
-	assert(newPos+count <= new.nkeys())
-	assert(count > 0)
-
-	// copy pointers
-	for i := uint16(0); i < count; i++ {
-		new.setPtr(newPos+i, old.getPtr(oldPos+i))
-	}
-
-	// copy offsets
-	oldOffsetBegin := old.getOffset(oldPos)
-	newOffsetBegin := new.getOffset(newPos)
-	// range is 1 to n (inclusive) for offsets
-	for i := uint16(1); i <= count; i++ {
-		oldOffset := old.getOffset(oldPos+i) - oldOffsetBegin
-		new.setOffset(newPos+i, newOffsetBegin+oldOffset)
-	}
-
-	// copy KV pairs
-	oldKVBegin := old.kvPos(oldPos)
-	oldKVEnd := old.kvPos(oldPos + count)
-	copy(new.data[new.kvPos(newPos):], old.data[oldKVBegin:oldKVEnd])
-}
-
-// copy KV into the position
-func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
-	// pointers
-	new.setPtr(idx, ptr)
-
-	// KVs
-	pos := new.kvPos(idx)
-	klen := uint16(len(key))
-	vlen := uint16(len(val))
-	binary.LittleEndian.PutUint16(new.data[pos:], klen)
-	binary.LittleEndian.PutUint16(new.data[pos+2:], vlen)
-	copy(new.data[pos+4:], key)
-	copy(new.data[pos+4+klen:], val)
-
-	// set offset of the next key to the end of the newly inserted key
-	currentOffset := new.getOffset(idx)
-	new.setOffset(idx+1, currentOffset+4+klen+vlen)
 }

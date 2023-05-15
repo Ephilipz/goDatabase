@@ -19,6 +19,86 @@ func init() {
 	assert(node1max <= BTREE_PAGE_SIZE)
 }
 
+// returns the first kid node whose range intersects with the key
+// TODO: bisect
+func nodeLookupLeaf(parent BNode, key []byte) uint16 {
+	var result uint16 = 0
+	// the first key is skipped since it's a copy from the parent node
+	for i := uint16(1); i < parent.nkeys(); i++ {
+		cmp := bytes.Compare(parent.getKey(i), key)
+		// keys[i] is smaller than or equal to key
+		if cmp <= 0 {
+			result = i
+		}
+		// keys[i] is larger than or equal to key
+		if cmp >= 0 {
+			break
+		}
+	}
+	return result
+}
+
+// add a new KV pair to a leaf node
+func leafInsert(new BNode, old BNode, idx uint16, key []byte, val []byte) {
+	new.setHeader(BNODE_LEAF, old.nkeys()+1)
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, 0, key, val)
+	nodeAppendRange(new, old, idx+1, idx, old.nkeys()-idx)
+}
+
+// update a KV pair in a leaf node
+func leafUpdate(new BNode, old BNode, idx uint16, key []byte, val []byte) {
+	new.setHeader(BNODE_LEAF, old.nkeys())
+	nodeAppendRange(new, old, 0, 0, idx)
+	nodeAppendKV(new, idx, 0, key, val)
+	nodeAppendRange(new, old, idx+1, idx+1, old.nkeys()-(idx+1))
+}
+
+// copy multiple KVs into the position
+func nodeAppendRange(new BNode, old BNode, newPos uint16, oldPos uint16, count uint16) {
+	assert(oldPos+count <= old.nkeys())
+	assert(newPos+count <= new.nkeys())
+	assert(count > 0)
+
+	// copy pointers
+	for i := uint16(0); i < count; i++ {
+		new.setPtr(newPos+i, old.getPtr(oldPos+i))
+	}
+
+	// copy offsets
+	oldOffsetBegin := old.getOffset(oldPos)
+	newOffsetBegin := new.getOffset(newPos)
+	// range is 1 to n (inclusive) for offsets
+	for i := uint16(1); i <= count; i++ {
+		oldOffset := old.getOffset(oldPos+i) - oldOffsetBegin
+		new.setOffset(newPos+i, newOffsetBegin+oldOffset)
+	}
+
+	// copy KV pairs
+	oldKVBegin := old.kvPos(oldPos)
+	oldKVEnd := old.kvPos(oldPos + count)
+	copy(new.data[new.kvPos(newPos):], old.data[oldKVBegin:oldKVEnd])
+}
+
+// copy KV into the position
+func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
+	// pointers
+	new.setPtr(idx, ptr)
+
+	// KVs
+	pos := new.kvPos(idx)
+	klen := uint16(len(key))
+	vlen := uint16(len(val))
+	binary.LittleEndian.PutUint16(new.data[pos:], klen)
+	binary.LittleEndian.PutUint16(new.data[pos+2:], vlen)
+	copy(new.data[pos+4:], key)
+	copy(new.data[pos+4+klen:], val)
+
+	// set offset of the next key to the end of the newly inserted key
+	currentOffset := new.getOffset(idx)
+	new.setOffset(idx+1, currentOffset+4+klen+vlen)
+}
+
 // insert a KV into a node, the result might be split into 2 nodes
 // the caller is responsible for deallocating the input node and splitting and allocating result nodes
 func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
@@ -73,19 +153,34 @@ func updateSplitNodesLinks(tree *BTree, new BNode, old BNode, idx uint16, nodes 
 
 // split a node into two nodes. Left may still be larger than the max page size
 func nodeSplit2(left BNode, right BNode, node BNode) {
-	// left will have a minimum of nkeys / 2. If nkeys is odd, left should have more elements
-	leftNKeys := (node.nkeys() + 1) / 2
-	left.setHeader(BNODE_LEAF, leftNKeys)
-	nodeAppendRange(left, node, 0, 0, leftNKeys)
-
-	// append until remaining bytes can fit in one page
-	for node.nbytes()-left.nbytes() <= BTREE_PAGE_SIZE {
-		// increase left node key size by 1
-		leftNKeys++
-		binary.LittleEndian.PutUint16(left.data[2:4], leftNKeys)
-		nodeAppendRange(left, node, leftNKeys-1, leftNKeys-1, 1)
+	assert(node.nkeys() >= 2)
+	nodeKeys := node.nkeys()
+	nodeBytes := node.nbytes()
+	// original guess for left size
+	leftKeys := nodeKeys / 2
+	leftBytes := func() uint16 {
+		return HEADER + 8*leftKeys + 2*leftKeys + node.getOffset(leftKeys)
 	}
-	nodeAppendRange(right, node, 0, leftNKeys, node.nkeys()-leftNKeys)
+	// try to fit left in one page
+	for leftBytes() > BTREE_PAGE_SIZE {
+		leftKeys--
+	}
+
+	// try to fit right in one page
+	rightBytes := func() uint16 {
+		return HEADER + nodeBytes - leftBytes()
+	}
+	for rightBytes() > BTREE_PAGE_SIZE {
+		leftKeys++
+	}
+	rightKeys := nodeKeys - leftKeys
+
+	// split
+	left.setHeader(BNODE_LEAF, leftKeys)
+	right.setHeader(BNODE_LEAF, rightKeys)
+	nodeAppendRange(left, node, 0, 0, leftKeys)
+	nodeAppendRange(right, node, 0, leftKeys, rightKeys)
+	assert(right.nbytes() <= BTREE_PAGE_SIZE)
 }
 
 // split a node if it's too big. the results are 1~3 nodes
