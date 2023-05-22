@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"sort"
 	"testing"
 	"unsafe"
 )
@@ -21,6 +23,7 @@ func (c *C) del(key string) bool {
 	return c.tree.Delete([]byte(key))
 }
 
+// returns a list of all keys and values in the tree. key[i] corresponds to val[i]
 func (c *C) dump() ([]string, []string) {
 	keys := []string{}
 	vals := []string{}
@@ -48,19 +51,62 @@ func (c *C) dump() ([]string, []string) {
 	return keys[1:], vals[1:]
 }
 
+// helper for keeping the map that holds kv pairs sorted
 type sortIF struct {
-	Len int
-	Less func(i, j int) bool
-	Swap func(i, j int)
+	len  int
+	less func(i, j int) bool
+	swap func(i, j int)
 }
 
+func (s sortIF) Len() int {
+	return s.len
+}
+func (s sortIF) Less(i, j int) bool {
+	return s.less(i, j)
+}
+func (s sortIF) Swap(i, j int) {
+	s.swap(i, j)
+}
+
+// verifies that the tree is correctly sorted
 func (c *C) verify(t *testing.T) {
 	keys, vals := c.dump()
 
-	refKeys, refVals := []string{}, []string{}
+	refKeys, refVals := make([]string, len(c.ref)), make([]string, len(c.ref))
+	i := 0
 	for k, v := range c.ref {
-		refKeys = append(refKeys, k)
-		refVals = append(refVals, v)
+		keys[i] = k
+		vals[i] = v
+		i++
+	}
+	assert(len(refKeys) == len(refVals))
+	// sort keys
+	sort.Stable(sortIF{
+		len:  len(refKeys),
+		less: func(i, j int) bool { return refKeys[i] < refKeys[j] },
+		swap: func(i, j int) {
+			k, v := refKeys[i], refVals[i]
+			refKeys[i], refVals[i] = refKeys[j], refVals[j]
+			refKeys[j], refVals[j] = k, v
+		},
+	})
+	assert(refKeys == keys)
+	// recursive function to verify internal nodes
+	var nodeVerify func(BNode)
+	nodeVerify = func(node BNode) {
+		nkeys := node.nkeys()
+		assert(nkeys > 0)
+		if node.btype() == BNODE_LEAF {
+			return
+		}
+		for i := uint16(0); i < nkeys; i++ {
+			key := node.getKey(i)
+			kid := c.tree.get(node.getPtr(i))
+			assert(bytes.Compare(key, kid.getKey(0)) == 0)
+			if kid.btype() == BNODE_NODE {
+				nodeVerify(kid)
+			}
+		}
 	}
 }
 
@@ -91,6 +137,8 @@ func NewC() *C {
 	}
 }
 
-func (t *testing.T) {
-
+func TestBTreeCRUD(t *testing.T) {
+	c := NewC()
+	c.add("k", "v")
+	c.verify(t)
 }
