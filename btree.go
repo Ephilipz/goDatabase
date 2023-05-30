@@ -75,9 +75,9 @@ func (tree *BTree) Insert(key []byte, val []byte) {
 }
 
 // returns the index of the first kid node whose range intersects with the key
-// TODO: bisect
+// todo: bisect
 func nodeLookup(node BNode, key []byte) uint16 {
-	var result uint16 = 0
+	var result uint16
 	// the first key is skipped since it's a copy from the parent node
 	for i := uint16(1); i < node.nkeys(); i++ {
 		cmp := bytes.Compare(node.getKey(i), key)
@@ -120,13 +120,13 @@ func leafDelete(new BNode, old BNode, idx uint16) {
 func nodeAppendRange(new BNode, old BNode, newPos uint16, oldPos uint16, count uint16) {
 	assert(oldPos+count <= old.nkeys())
 	assert(newPos+count <= new.nkeys())
-	assert(count > 0)
-
+	if count == 0 {
+		return
+	}
 	// copy pointers
 	for i := uint16(0); i < count; i++ {
 		new.setPtr(newPos+i, old.getPtr(oldPos+i))
 	}
-
 	// copy offsets
 	oldOffsetBegin := old.getOffset(oldPos)
 	newOffsetBegin := new.getOffset(newPos)
@@ -135,7 +135,6 @@ func nodeAppendRange(new BNode, old BNode, newPos uint16, oldPos uint16, count u
 		oldOffset := old.getOffset(oldPos+i) - oldOffsetBegin
 		new.setOffset(newPos+i, newOffsetBegin+oldOffset)
 	}
-
 	// copy KV pairs
 	oldKVBegin := old.kvPos(oldPos)
 	oldKVEnd := old.kvPos(oldPos + count)
@@ -146,7 +145,6 @@ func nodeAppendRange(new BNode, old BNode, newPos uint16, oldPos uint16, count u
 func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	// pointers
 	new.setPtr(idx, ptr)
-
 	// KVs
 	pos := new.kvPos(idx)
 	klen := uint16(len(key))
@@ -155,7 +153,6 @@ func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 	binary.LittleEndian.PutUint16(new.data[pos+2:], vlen)
 	copy(new.data[pos+4:], key)
 	copy(new.data[pos+4+klen:], val)
-
 	// set offset of the next key to the end of the newly inserted key
 	currentOffset := new.getOffset(idx)
 	new.setOffset(idx+1, currentOffset+4+klen+vlen)
@@ -166,7 +163,6 @@ func nodeAppendKV(new BNode, idx uint16, ptr uint64, key []byte, val []byte) {
 func treeInsert(tree *BTree, node BNode, key []byte, val []byte) BNode {
 	// the result node. It's allowed to be larger than 1 page, if so it will be split
 	newNode := BNode{data: make([]byte, 2*BTREE_PAGE_SIZE)}
-
 	// where to insert the key?
 	idx := nodeLookup(node, key)
 	switch node.btype() {
@@ -193,7 +189,6 @@ func nodeInsert(tree *BTree, new BNode, node BNode, idx uint16, key []byte, val 
 	kidPtr := node.getPtr(idx)
 	kidNode := tree.get(kidPtr)
 	tree.del(kidPtr)
-
 	// recursive insertion to the kid node
 	kidNode = treeInsert(tree, kidNode, key, val)
 	// split the result
@@ -205,6 +200,10 @@ func nodeInsert(tree *BTree, new BNode, node BNode, idx uint16, key []byte, val 
 // updates the parent node pointers to include the new kid nodes
 func nodeAddKidLinks(tree *BTree, new BNode, old BNode, idx uint16, kids ...BNode) {
 	nodesCnt := uint16(len(kids))
+	if nodesCnt == 1 && bytes.Equal(kids[0].getKey(0), old.getKey(idx)) {
+		nodeReplace1Ptr(new, old, idx, tree.new(kids[0]))
+		return
+	}
 	new.setHeader(BNODE_NODE, old.nkeys()+nodesCnt-1)
 	// append old pointers until idx
 	nodeAppendRange(new, old, 0, 0, idx)
@@ -214,6 +213,14 @@ func nodeAddKidLinks(tree *BTree, new BNode, old BNode, idx uint16, kids ...BNod
 	}
 	// append old pointers after idx
 	nodeAppendRange(new, old, idx+nodesCnt, idx+1, old.nkeys()-(idx+1))
+}
+
+// replaces a link to a kid with the same key but a different pointer
+func nodeReplace1Ptr(new BNode, old BNode, idx uint16, ptr uint64) {
+	// copy all data from old to new
+	copy(new.data, old.data[:old.nbytes()])
+	// only the pointer at idx changes
+	new.setPtr(idx, ptr)
 }
 
 // merges 2 child pointers into 1. This is called after a merge occurs
@@ -241,7 +248,6 @@ func nodeSplit2(left BNode, right BNode, node BNode) {
 	for leftBytes() > BTREE_PAGE_SIZE {
 		leftKeys--
 	}
-
 	// try to fit right in one page
 	rightBytes := func() uint16 {
 		return HEADER + nodeBytes - leftBytes()
@@ -250,10 +256,9 @@ func nodeSplit2(left BNode, right BNode, node BNode) {
 		leftKeys++
 	}
 	rightKeys := nodeKeys - leftKeys
-
 	// split
-	left.setHeader(BNODE_LEAF, leftKeys)
-	right.setHeader(BNODE_LEAF, rightKeys)
+	left.setHeader(node.btype(), leftKeys)
+	right.setHeader(node.btype(), rightKeys)
 	nodeAppendRange(left, node, 0, 0, leftKeys)
 	nodeAppendRange(right, node, 0, leftKeys, rightKeys)
 	assert(right.nbytes() <= BTREE_PAGE_SIZE)

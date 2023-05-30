@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 	"testing"
 	"unsafe"
@@ -71,12 +72,11 @@ func (s sortIF) Swap(i, j int) {
 // verifies that the tree is correctly sorted
 func (c *C) verify(t *testing.T) {
 	keys, vals := c.dump()
-
 	refKeys, refVals := make([]string, len(c.ref)), make([]string, len(c.ref))
 	i := 0
 	for k, v := range c.ref {
-		keys[i] = k
-		vals[i] = v
+		refKeys[i] = k
+		refVals[i] = v
 		i++
 	}
 	assert(len(refKeys) == len(refVals))
@@ -90,7 +90,9 @@ func (c *C) verify(t *testing.T) {
 			refKeys[j], refVals[j] = k, v
 		},
 	})
-	assert(refKeys == keys)
+	// verify that the keys and values of the tree equal the sorted keys and values
+	assertArrEqual(refKeys, keys)
+	assertArrEqual(refVals, vals)
 	// recursive function to verify internal nodes
 	var nodeVerify func(BNode)
 	nodeVerify = func(node BNode) {
@@ -103,9 +105,7 @@ func (c *C) verify(t *testing.T) {
 			key := node.getKey(i)
 			kid := c.tree.get(node.getPtr(i))
 			assert(bytes.Compare(key, kid.getKey(0)) == 0)
-			if kid.btype() == BNODE_NODE {
-				nodeVerify(kid)
-			}
+			nodeVerify(kid)
 		}
 	}
 }
@@ -137,8 +137,49 @@ func NewC() *C {
 	}
 }
 
+// generates a long shuffled number from h
+func fmix(h uint32) uint32 {
+	h ^= h >> 16
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	h *= 0xc2b2ae35
+	h ^= h >> 16
+	return h
+}
+
 func TestBTreeCRUD(t *testing.T) {
 	c := NewC()
+
+	// insert
+	for i := uint32(0); i < 250000; i++ {
+		key := fmt.Sprintf("key%d", fmix(i))
+		val := fmt.Sprintf("vvv%d", fmix(-i))
+		c.add(key, val)
+	}
+	c.verify(t)
+
+	// delete
+	assert(!c.del("kk")) // delete should return false for a non-existent key
+	for i := uint32(2000); i < 250000; i++ {
+		key := fmt.Sprintf("key%d", fmix(i))
+		assert(c.del(key))
+	}
+	c.verify(t)
+
+	// update
+	for i := uint32(0); i < 2000; i++ {
+		key := fmt.Sprintf("key%d", fmix(i))
+		val := fmt.Sprintf("vvv%d", fmix(i))
+		c.add(key, val)
+	}
+	c.verify(t)
+
+	// delete remaining
+	for i := uint32(0); i < 2000; i++ {
+		key := fmt.Sprintf("key%d", fmix(i))
+		c.del(key)
+	}
 	c.add("k", "v")
 	c.verify(t)
+	assert(len(c.pages) == 1)
 }
