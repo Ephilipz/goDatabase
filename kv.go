@@ -81,6 +81,20 @@ func (db *KV) Open() error {
 	if err != nil {
 		db.Close()
 	}
+	// db mmap assign
+	db.mmap.fileSize = size
+	db.mmap.totalSize = len(chunk)
+	db.mmap.chunks = [][]byte{chunk}
+	// btree callback functions
+	db.tree.get = db.pageGet
+	db.tree.new = db.pageNew
+	db.tree.del = db.pageDel
+	// read master page
+	err = masterLoad(db)
+	if err != nil {
+		db.Close()
+	}
+	return nil
 }
 
 func (db *KV) Close() {
